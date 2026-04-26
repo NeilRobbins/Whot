@@ -1,6 +1,7 @@
-import { joinRoom, getRelaySockets, type Room } from "trystero/nostr";
+import { joinRoom, getRelaySockets, selfId, type Room } from "trystero/mqtt";
 import type { SignedEvent, PlayerId } from "@protocol-core/event-types";
 import type { SignedAck } from "@trust-core/acks";
+import { log } from "@protocol-core/diagnostics";
 
 export type WireMessage =
   | { kind: "EVENT"; event: SignedEvent }
@@ -12,10 +13,21 @@ export type WireMessage =
   | { kind: "HELLO"; playerId: PlayerId; displayName: string; publicKey: string }
   | { kind: "LOBBY_STATE"; players: Array<{ playerId: PlayerId; displayName: string; publicKey: string }>; ready: Record<PlayerId, boolean>; rosterLocked: boolean };
 
+export type RelayState = {
+  url: string;
+  state: "connecting" | "open" | "closing" | "closed";
+};
+
 export type ConnectionStatus = {
+  strategy: "mqtt";
+  relays: RelayState[];
   relaysConnected: number;
   relaysTotal: number;
   peerCount: number;
+  peers: string[];
+  selfPeerId?: string;
+  roomId: string;
+  appId: string;
 };
 
 export type PeerMeshHandlers = {
@@ -36,27 +48,12 @@ export type PeerMesh = {
 const APP_ID = "whot-p2p-v1";
 
 /**
- * Public Nostr relays. Trystero uses these as untrusted signalling — once
- * peers find each other, every byte travels over end-to-end-encrypted WebRTC
- * data channels. We list multiple relays so that a single relay outage does
- * not break peer discovery.
- */
-const RELAY_URLS = [
-  "wss://relay.damus.io",
-  "wss://nos.lol",
-  "wss://relay.snort.social",
-  "wss://relay.nostr.band",
-  "wss://nostr.wine",
-];
-
-/**
  * STUN servers help discover the public-IP/port pair for direct WebRTC
  * connections. TURN relays carry the data channel when direct connections
  * are blocked by symmetric NATs / restrictive firewalls.
  *
- * Public TURN servers are best-effort. If both peers are on networks that
- * actively block UDP, even TURN may not save them — that's a fundamental
- * limitation of public-internet WebRTC without dedicated infrastructure.
+ * We do not currently provision a TURN server. If two peers are both behind
+ * symmetric NATs that deny UDP, even relayable signalling will not save them.
  */
 const RTC_CONFIG: RTCConfiguration = {
   iceServers: [
@@ -66,69 +63,103 @@ const RTC_CONFIG: RTCConfiguration = {
   ],
 };
 
+const READY_STATE_LABEL: Record<number, RelayState["state"]> = {
+  [WebSocket.CONNECTING]: "connecting",
+  [WebSocket.OPEN]: "open",
+  [WebSocket.CLOSING]: "closing",
+  [WebSocket.CLOSED]: "closed",
+};
+
 type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 
 export function joinMesh(roomId: string, handlers: PeerMeshHandlers): PeerMesh {
+  log.info("transport", "joinMesh", {
+    strategy: "mqtt",
+    appId: APP_ID,
+    roomId,
+    selfPeerId: selfId,
+  });
+
   const room: Room = joinRoom(
     {
       appId: APP_ID,
-      relayUrls: RELAY_URLS,
-      relayRedundancy: 3,
+      relayRedundancy: 4,
       rtcConfig: RTC_CONFIG,
     },
     roomId,
   );
-  // WireMessage is JSON-shaped at runtime; SignedEvent.payload is `unknown`
-  // which is wider than trystero's JsonValue. Cast at the boundary.
   const [sendMsg, getMsg] = room.makeAction<Json>("msg");
 
-  if (handlers.onPeerJoin) {
-    room.onPeerJoin((peerId) => {
-      handlers.onPeerJoin!(peerId);
-      pushStatus();
-    });
-  }
-  if (handlers.onPeerLeave) {
-    room.onPeerLeave((peerId) => {
-      handlers.onPeerLeave!(peerId);
-      pushStatus();
-    });
-  }
-
-  getMsg((data, peerId) => {
-    handlers.onMessage(data as unknown as WireMessage, peerId);
+  room.onPeerJoin((peerId) => {
+    log.info("transport", "peer joined", { peerId, peerCount: Object.keys(room.getPeers()).length });
+    handlers.onPeerJoin?.(peerId);
+    pushStatus("peer-join");
+  });
+  room.onPeerLeave((peerId) => {
+    log.info("transport", "peer left", { peerId, peerCount: Object.keys(room.getPeers()).length });
+    handlers.onPeerLeave?.(peerId);
+    pushStatus("peer-leave");
   });
 
-  function status(): ConnectionStatus {
+  getMsg((data, peerId) => {
+    const msg = data as unknown as WireMessage;
+    log.debug("transport", `recv ${msg.kind}`, { fromPeerId: peerId });
+    handlers.onMessage(msg, peerId);
+  });
+
+  function relayStates(): RelayState[] {
     const sockets = getRelaySockets();
-    const entries = Object.values(sockets);
-    const open = entries.filter((s) => s.readyState === WebSocket.OPEN).length;
+    return Object.entries(sockets).map(([url, ws]) => ({
+      url,
+      state: READY_STATE_LABEL[ws.readyState] ?? "closed",
+    }));
+  }
+
+  function status(): ConnectionStatus {
+    const relays = relayStates();
+    const peerIds = Object.keys(room.getPeers());
     return {
-      relaysConnected: open,
-      relaysTotal: entries.length || RELAY_URLS.length,
-      peerCount: Object.keys(room.getPeers()).length,
+      strategy: "mqtt",
+      relays,
+      relaysConnected: relays.filter((r) => r.state === "open").length,
+      relaysTotal: relays.length,
+      peerCount: peerIds.length,
+      peers: peerIds,
+      selfPeerId: selfId,
+      roomId,
+      appId: APP_ID,
     };
   }
 
-  function pushStatus(): void {
-    handlers.onStatus?.(status());
+  let lastStatusJson = "";
+  function pushStatus(reason: string): void {
+    const s = status();
+    const j = JSON.stringify(s);
+    if (j === lastStatusJson) return; // de-dupe
+    lastStatusJson = j;
+    log.debug("transport", `status update (${reason})`, s);
+    handlers.onStatus?.(s);
   }
 
-  // Push status periodically so the UI can show "connecting…" feedback.
-  const statusTimer = setInterval(pushStatus, 2000);
-  // First push on next tick so callers can subscribe before it fires.
-  queueMicrotask(pushStatus);
+  // Push first status soon after construction, then on a low-frequency timer
+  // so the relay-connection state propagates without spamming.
+  const initialDelay = setTimeout(() => pushStatus("init"), 250);
+  const statusTimer = setInterval(() => pushStatus("interval"), 2000);
 
   return {
     send: (msg) => {
-      sendMsg(msg as unknown as Json);
+      log.debug("transport", `send ${msg.kind}`, { peerCount: Object.keys(room.getPeers()).length });
+      void sendMsg(msg as unknown as Json);
     },
     sendTo: (peerId, msg) => {
-      sendMsg(msg as unknown as Json, peerId);
+      log.debug("transport", `sendTo ${msg.kind}`, { peerId });
+      void sendMsg(msg as unknown as Json, peerId);
     },
     peers: () => Object.keys(room.getPeers()),
     status,
     leave: () => {
+      log.info("transport", "leave");
+      clearTimeout(initialDelay);
       clearInterval(statusTimer);
       void room.leave();
     },

@@ -4,6 +4,7 @@ import { createHostSession, createGuestSession, type Session } from "../session"
 import type { LobbyState } from "@lobby/lobby-state";
 import type { WhotGameState } from "@whot-rules/state";
 import type { SignedEvent } from "@protocol-core/event-types";
+import { DebugPanel } from "../components/DebugPanel";
 
 let activeSession: Session | undefined;
 export function getSession(): Session | undefined {
@@ -201,6 +202,8 @@ export function HomeScreen() {
           <li>Cards deal automatically. First to empty their hand wins.</li>
         </ol>
       </section>
+
+      <DebugPanel />
     </>
   );
 }

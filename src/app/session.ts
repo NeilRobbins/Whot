@@ -1,5 +1,7 @@
 import type { BaseEvent, Player, PlayerId, SignedEvent } from "@protocol-core/event-types";
 import { ZERO_HASH, hashCanonical } from "@protocol-core/hashing";
+import { log as diagLog } from "@protocol-core/diagnostics";
+import { BUILD_ID } from "@protocol-core/build-info";
 import type { PlayerIdentity } from "@trust-core/identity";
 import { signEvent } from "@trust-core/signatures";
 import { signAck } from "@trust-core/acks";
@@ -171,6 +173,14 @@ type WireOpts = {
 };
 
 async function wireSession(o: WireOpts): Promise<Session> {
+  diagLog.info("session", `wireSession ${o.isHost ? "(host)" : "(guest)"}`, {
+    gameId: o.gameId,
+    roomId: o.roomId,
+    playerId: o.identity.playerId,
+    displayName: o.displayName,
+    buildId: BUILD_ID,
+  });
+
   let lobby = o.initialLobby;
   let game: WhotGameState | undefined;
   const log = new EventLog();
@@ -214,11 +224,17 @@ async function wireSession(o: WireOpts): Promise<Session> {
   const append = async (event: SignedEvent): Promise<boolean> => {
     const forkEv = fork.observe(event);
     if (forkEv) {
+      diagLog.warn("session", "fork detected", { actor: forkEv.playerId });
       o.listeners.onFork?.(forkEv);
       evidence.push(forkEv);
     }
     const r = await log.append(event);
     if (!r.ok) {
+      diagLog.warn("session", `append rejected: ${r.reason}`, {
+        sequence: event.sequence,
+        type: event.type,
+        actor: event.actor,
+      });
       if (r.reason === "OUT_OF_ORDER" && event.sequence > log.tipSequence + 1) {
         // Buffer the event for later, request the gap.
         if (!pendingEvents.some((e) => e.eventHash === event.eventHash)) {
@@ -235,6 +251,11 @@ async function wireSession(o: WireOpts): Promise<Session> {
       if (r.reason !== "DUPLICATE") emitError(`event rejected: ${r.reason}`);
       return false;
     }
+    diagLog.info("session", `append ok seq=${event.sequence}`, {
+      type: event.type,
+      actor: event.actor,
+      eventHash: event.eventHash,
+    });
     acks.recordSelfAck(event);
     emit(event);
     applyEventToState(event);

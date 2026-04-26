@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useApp } from "../store";
 import { getSession } from "./HomeScreen";
 import type { Player } from "@protocol-core/event-types";
+import { DebugPanel } from "../components/DebugPanel";
 
 export function LobbyScreen() {
   const lobby = useApp((s) => s.lobby);
@@ -34,10 +35,13 @@ export function LobbyScreen() {
 
   if (!lobby || !identity) {
     return (
-      <div className="center-message">
-        <div className="spinner" /> Connecting to peers…
-        <ConnectionStatusLine connection={connection} />
-      </div>
+      <>
+        <div className="center-message">
+          <div className="spinner" /> Connecting to peers…
+          <ConnectionStatusLine connection={connection} />
+        </div>
+        <DebugPanel />
+      </>
     );
   }
 
@@ -179,6 +183,8 @@ export function LobbyScreen() {
         )}
         <ConnectionStatusLine connection={connection} />
       </section>
+
+      <DebugPanel />
     </>
   );
 }

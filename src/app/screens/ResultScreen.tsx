@@ -2,6 +2,7 @@ import { useApp } from "../store";
 import { summariseOutcome } from "@endgame/index";
 import { disputeBundleFilename } from "@game-log/dispute";
 import { getSession, setSession } from "./HomeScreen";
+import { DebugPanel } from "../components/DebugPanel";
 
 export function ResultScreen() {
   const game = useApp((s) => s.game);
@@ -94,6 +95,7 @@ export function ResultScreen() {
 
 
       <FinalityAuditFooter />
+      <DebugPanel />
     </>
   );
 }

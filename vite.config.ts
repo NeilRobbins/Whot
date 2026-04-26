@@ -1,12 +1,29 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath, URL } from "node:url";
+import { execSync } from "node:child_process";
+
+function buildId(): string {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA;
+  try {
+    return execSync("git rev-parse HEAD", { encoding: "utf8" }).trim();
+  } catch {
+    return "local";
+  }
+}
+
+const BUILD_ID = buildId();
+const BUILD_TIME = new Date().toISOString();
 
 export default defineConfig({
   plugins: [react()],
   // Relative asset paths so the same dist/ works at the site root (Cloudflare
   // Pages, Netlify) or under a sub-path (GitHub Pages /<repo>/).
   base: "./",
+  define: {
+    __WHOT_BUILD_ID__: JSON.stringify(BUILD_ID),
+    __WHOT_BUILD_TIME__: JSON.stringify(BUILD_TIME),
+  },
   resolve: {
     alias: {
       "@protocol-core": fileURLToPath(new URL("./src/packages/protocol-core", import.meta.url)),
