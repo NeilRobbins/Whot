@@ -386,7 +386,7 @@ async function wireSession(o: WireOpts): Promise<Session> {
   }
 
   // Wire the mesh.
-  mesh = joinMesh(o.roomId, {
+  const meshHandlers: Parameters<typeof joinMesh>[1] = {
     onPeerJoin: async (peerId) => {
       // Send our HELLO and full event log to the new peer.
       mesh!.sendTo(peerId, {
@@ -489,7 +489,8 @@ async function wireSession(o: WireOpts): Promise<Session> {
           break;
       }
     },
-  });
+  };
+  mesh = joinMesh(o.roomId, meshHandlers);
 
   async function broadcast(event: SignedEvent): Promise<void> {
     const ok = await append(event);
@@ -517,6 +518,47 @@ async function wireSession(o: WireOpts): Promise<Session> {
       tipSequence: log.tipSequence,
     });
   }, 5000);
+
+  // iOS Safari / Chrome on iOS suspend background tabs. Every WebSocket gets
+  // closed and the announce/discover handshake on the relays is lost. When
+  // the tab becomes visible again, tear the mesh down and rejoin so we
+  // freshly announce ourselves to peers and re-establish data channels.
+  let visibilityHandler: (() => void) | undefined;
+  let backgroundedAt: number | undefined;
+  if (typeof document !== "undefined") {
+    visibilityHandler = () => {
+      if (document.visibilityState === "hidden") {
+        backgroundedAt = Date.now();
+        diagLog.warn("session", "tab hidden — peer connections may be lost", {
+          gameId: o.gameId,
+        });
+      } else if (document.visibilityState === "visible") {
+        const hiddenForMs = backgroundedAt ? Date.now() - backgroundedAt : 0;
+        diagLog.info("session", "tab visible again", {
+          hiddenForMs,
+          willRejoin: hiddenForMs > 5000,
+        });
+        backgroundedAt = undefined;
+        if (hiddenForMs > 5000) {
+          rejoinMesh();
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", visibilityHandler);
+  }
+
+  function rejoinMesh(): void {
+    if (!mesh) return;
+    diagLog.info("session", "rejoining mesh");
+    try {
+      mesh.leave();
+    } catch (err) {
+      diagLog.warn("session", "leave on rejoin failed", { error: (err as Error).message });
+    }
+    mesh = joinMesh(o.roomId, meshHandlers);
+    // Replay our log to any peers that connect after the rejoin via onPeerJoin
+    // — that path already sends EVENT_BATCH on join.
+  }
 
   async function issueJoinRequest(): Promise<void> {
     const me: Player = {
@@ -628,6 +670,9 @@ async function wireSession(o: WireOpts): Promise<Session> {
     },
     leave: () => {
       clearInterval(pingInterval);
+      if (visibilityHandler && typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", visibilityHandler);
+      }
       mesh?.leave();
     },
     finality: () => log.all().map((e) => acks.status(e)),

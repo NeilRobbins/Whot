@@ -15,6 +15,7 @@ export function GameScreen() {
   const setSelectedCard = useApp((s) => s.setSelectedCard);
   const whotPicker = useApp((s) => s.whotShapePicker);
   const setWhotPicker = useApp((s) => s.setWhotShapePicker);
+  const tabHidden = useApp((s) => s.tabHidden);
 
   const me = identity?.playerId ?? "";
   const myHand = useMemo(() => game?.hands[me] ?? [], [game, me]);
@@ -102,6 +103,14 @@ export function GameScreen() {
 
   return (
     <div className="table">
+      {tabHidden && (
+        <div
+          className="banner"
+          style={{ background: "var(--warn)", color: "#0b1220" }}
+        >
+          Tab in background — iOS will drop your connection. Return soon.
+        </div>
+      )}
       <div className="opponents">
         {opponents.map((pid) => {
           const isCurrent = currentPlayer(game) === pid;

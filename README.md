@@ -70,6 +70,33 @@ Once deployed, open the URL on the host device, tap **Host a Whot! Game**,
 share the invite link via WhatsApp / SMS / AirDrop, everyone hits **I'm
 Ready**, host taps **Lock Roster & Start**.
 
+## Testing across devices (important)
+
+Mobile browsers (iOS Safari and Chrome on iOS especially) **suspend
+background tabs** within tens of seconds. When a tab is in the background,
+all WebSocket signalling connections close, peer discovery stops, and the
+WebRTC handshake never completes. This means **two browser tabs on the
+same phone usually cannot bridge each other** — switching from the host
+tab to the guest tab to paste the invite link is enough to break the host
+side.
+
+For real testing:
+
+- **Use two physically separate devices**: host on one phone/laptop,
+  invite the other.
+- **Scan the lobby's QR code** from the second device's camera — no
+  link-pasting needed.
+- Keep both browser windows in the foreground while connecting.
+
+The lobby shows a yellow banner whenever the tab is hidden, and the
+session automatically rejoins the signalling mesh when the tab becomes
+visible again. Even so, gaps where the host is suspended can leave new
+guests unable to discover the host until both are foregrounded together.
+
+If you must self-host the connection plane (e.g. for a strict corporate
+network), the RFC roadmap covers replacing the public Trystero relays
+with a Cloudflare Worker + Durable Object signalling service.
+
 ## Architecture
 
 The codebase is organised as a single Vite app with internal packages under

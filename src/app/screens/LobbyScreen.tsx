@@ -3,6 +3,7 @@ import { useApp } from "../store";
 import { getSession } from "./HomeScreen";
 import type { Player } from "@protocol-core/event-types";
 import { DebugPanel } from "../components/DebugPanel";
+import { QrCode } from "../components/QrCode";
 
 export function LobbyScreen() {
   const lobby = useApp((s) => s.lobby);
@@ -12,6 +13,7 @@ export function LobbyScreen() {
   const setError = useApp((s) => s.setError);
   const events = useApp((s) => s.log);
   const connection = useApp((s) => s.connection);
+  const tabHidden = useApp((s) => s.tabHidden);
   const [copied, setCopied] = useState(false);
 
   // Auto-admit join requests if host.
@@ -114,6 +116,12 @@ export function LobbyScreen() {
       {showShare && (
         <section className="card-panel">
           <h2>Invite Players</h2>
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <QrCode value={inviteUrl} size={200} ariaLabel="Scan to join Whot" />
+          </div>
+          <p className="muted center-text" style={{ fontSize: 12, margin: 0 }}>
+            Scan from another device's camera to join — no need to copy a link.
+          </p>
           <div className="copyable">
             <input className="input" readOnly value={inviteUrl} />
             <button className="btn" onClick={copyLink}>
@@ -124,10 +132,19 @@ export function LobbyScreen() {
             Share Invite
           </button>
           <p className="muted">
-            Anyone with this link can join. The host (you) controls who is
-            admitted; admission happens automatically here for simplicity.
+            Tip: open this lobby on one device and scan the QR code from
+            another. iOS pauses background browser tabs, so two tabs on the
+            same phone often can't bridge — use a second device for best
+            results.
           </p>
         </section>
+      )}
+
+      {tabHidden && (
+        <div className="banner" style={{ background: "var(--warn)", color: "#0b1220" }}>
+          This tab is in the background. iOS will pause peer connections
+          shortly. Keep the lobby in the foreground for invites and play.
+        </div>
       )}
 
       <section className="card-panel">

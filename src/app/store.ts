@@ -26,6 +26,7 @@ export type AppState = {
   peers: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }>;
   finality: FinalityStatus[];
   connection?: ConnectionStatus;
+  tabHidden: boolean;
   errorBanner?: string;
   selectedCardId?: string;
   whotShapePicker?: { cardId: string };
@@ -40,6 +41,7 @@ export type AppState = {
   resetEvents: () => void;
   setFinality: (f: FinalityStatus[]) => void;
   setConnection: (c: ConnectionStatus) => void;
+  setTabHidden: (h: boolean) => void;
   setPeerInfo: (peerId: string, info: { playerId?: PlayerId; displayName?: string; publicKey?: string }) => void;
   removePeer: (peerId: string) => void;
   setSelectedCard: (id?: string) => void;
@@ -67,6 +69,7 @@ export const useApp = create<AppState>((set) => ({
   log: [],
   peers: {},
   finality: [],
+  tabHidden: typeof document !== "undefined" ? document.visibilityState === "hidden" : false,
   setDisplayName: (name) => {
     localStorage.setItem("whot.displayName", name);
     set({ displayName: name });
@@ -81,6 +84,7 @@ export const useApp = create<AppState>((set) => ({
   resetEvents: () => set({ log: [] }),
   setFinality: (f) => set({ finality: f }),
   setConnection: (c) => set({ connection: c }),
+  setTabHidden: (h) => set({ tabHidden: h }),
   setPeerInfo: (peerId, info) =>
     set((s) => ({
       peers: { ...s.peers, [peerId]: { ...s.peers[peerId], ...info } },

@@ -13,6 +13,7 @@ export function App() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
   const setScreen = useApp((s) => s.setScreen);
+  const setTabHidden = useApp((s) => s.setTabHidden);
 
   useEffect(() => {
     if (!identity) {
@@ -31,6 +32,16 @@ export function App() {
       setScreen("HOME");
     }
   }, [setScreen]);
+
+  // Track tab visibility so the lobby can warn the user when iOS suspends
+  // the page and breaks WebSocket signalling.
+  useEffect(() => {
+    const onVisibility = () => {
+      setTabHidden(document.visibilityState === "hidden");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [setTabHidden]);
 
   return (
     <div className="app">
