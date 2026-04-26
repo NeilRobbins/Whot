@@ -13,10 +13,62 @@ npm run build        # production static bundle in dist/
 npm test             # run Vitest unit tests
 ```
 
-To play across devices, deploy `dist/` to any static host (Cloudflare Pages,
-GitHub Pages, Netlify, Vercel, S3 + CloudFront). Open the deployed URL on the
-host device, tap **Host a Whot! Game**, share the invite link via WhatsApp /
-SMS / AirDrop. Everyone hits **I'm Ready**, host taps **Lock Roster & Start**.
+To play across devices, deploy `dist/` to any static host. Asset URLs are
+relative, so the same `dist/` works at the site root or under a sub-path.
+
+## Deploying
+
+### Option A — GitHub Pages (automatic, no extra accounts)
+
+A workflow at `.github/workflows/deploy.yml` types-checks, runs the test
+suite, builds, and deploys on every push to `main`/`master` (and the working
+branch). Enable Pages once:
+
+1. Push the repo to GitHub.
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions.**
+3. Push to `main` (or run the workflow manually from the Actions tab).
+
+The site will be served at `https://<user>.github.io/<repo>/`. You can also
+attach a custom domain from the same Pages settings page.
+
+### Option B — Cloudflare Pages
+
+Drag-and-drop or Git-connected:
+
+```bash
+npm run build
+npx wrangler pages deploy dist --project-name whot
+```
+
+Or in the Cloudflare dashboard, create a Pages project, point it at this
+repo, and set:
+
+- Build command: `npm run build`
+- Build output directory: `dist`
+- Node version: `22`
+
+The bundled `public/_redirects` and `public/_headers` files are automatically
+honoured by Cloudflare Pages (SPA fallback + immutable caching for hashed
+assets).
+
+### Option C — Netlify
+
+```bash
+npm run build
+npx netlify deploy --dir=dist --prod
+```
+
+Or connect the repo in the Netlify UI with build command `npm run build` and
+publish directory `dist`. The same `_redirects` / `_headers` files apply.
+
+### Option D — anywhere else
+
+The `dist/` folder is a plain static site. Drop it on S3 + CloudFront, an
+nginx server, or any other static host. No server-side runtime is required.
+
+Once deployed, open the URL on the host device, tap **Host a Whot! Game**,
+share the invite link via WhatsApp / SMS / AirDrop, everyone hits **I'm
+Ready**, host taps **Lock Roster & Start**.
 
 ## Architecture
 

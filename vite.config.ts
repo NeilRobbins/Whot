@@ -4,6 +4,9 @@ import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   plugins: [react()],
+  // Relative asset paths so the same dist/ works at the site root (Cloudflare
+  // Pages, Netlify) or under a sub-path (GitHub Pages /<repo>/).
+  base: "./",
   resolve: {
     alias: {
       "@protocol-core": fileURLToPath(new URL("./src/packages/protocol-core", import.meta.url)),
