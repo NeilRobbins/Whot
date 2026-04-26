@@ -1,8 +1,44 @@
+import { useState } from "react";
 import { useApp } from "../store";
 import { summariseOutcome } from "@endgame/index";
 import { disputeBundleFilename } from "@game-log/dispute";
 import { getSession, setSession } from "./HomeScreen";
 import { DebugPanel } from "../components/DebugPanel";
+
+async function shareJson(filename: string, json: string): Promise<string> {
+  try {
+    const file = new File([json], filename, { type: "application/json" });
+    const nav = navigator as Navigator & {
+      canShare?: (data: { files?: File[] }) => boolean;
+    };
+    if (nav.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return "Shared.";
+    }
+  } catch (err) {
+    if (!/abort|cancel/i.test((err as Error).message)) {
+      // continue to fallbacks
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(json);
+    return `Copied ${json.length.toLocaleString()} chars to clipboard.`;
+  } catch {
+    /* fall through */
+  }
+  try {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    return "Downloaded.";
+  } catch {
+    return "Could not share. Open the debug panel for inline export.";
+  }
+}
 
 export function ResultScreen() {
   const game = useApp((s) => s.game);
@@ -26,31 +62,25 @@ export function ResultScreen() {
     location.hash = "";
   }
 
-  function exportTranscript() {
-    const blob = new Blob([JSON.stringify(events, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `whot-transcript-${game!.rulesHash.slice(0, 8)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+
+  async function exportTranscript() {
+    const note = await shareJson(
+      `whot-transcript-${game!.rulesHash.slice(0, 8)}.json`,
+      JSON.stringify(events, null, 2),
+    );
+    setExportNote(note);
   }
 
-  function exportDisputeBundle() {
+  async function exportDisputeBundle() {
     const session = getSession();
     if (!session) return;
     const bundle = session.exportDisputeBundle();
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = disputeBundleFilename(bundle);
-    a.click();
-    URL.revokeObjectURL(url);
+    const note = await shareJson(
+      disputeBundleFilename(bundle),
+      JSON.stringify(bundle, null, 2),
+    );
+    setExportNote(note);
   }
 
   const finalScores =
@@ -89,6 +119,11 @@ export function ResultScreen() {
         <button className="btn btn-ghost" onClick={exportDisputeBundle}>
           Export Dispute Bundle
         </button>
+        {exportNote && (
+          <p className="muted center-text" style={{ fontSize: 12 }}>
+            {exportNote}
+          </p>
+        )}
       </section>
 
       <FinalitySummary />

@@ -31,7 +31,10 @@ export function DebugPanel() {
     });
   }, []);
 
-  function exportSnapshot() {
+  const [exportText, setExportText] = useState<string | null>(null);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+
+  function buildSnapshot(): string {
     const snapshot = {
       build: { id: BUILD_ID, time: BUILD_TIME, userAgent: navigator.userAgent },
       identity: identity
@@ -44,15 +47,76 @@ export function DebugPanel() {
       events,
       diagnostics: entries,
     };
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `whot-debug-${BUILD_ID.slice(0, 8)}-${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    return JSON.stringify(snapshot, null, 2);
+  }
+
+  async function exportSnapshot() {
+    const json = buildSnapshot();
+    const filename = `whot-debug-${BUILD_ID.slice(0, 8)}-${Date.now()}.json`;
+    setExportNote(null);
+
+    // 1. Try Web Share API with a File (works on iOS Safari → Share Sheet,
+    // letting users save to Files / AirDrop / Mail / Messages).
+    try {
+      const file = new File([json], filename, { type: "application/json" });
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files?: File[] }) => boolean;
+      };
+      if (nav.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Whot debug snapshot" });
+        setExportNote("Shared via system share sheet.");
+        return;
+      }
+    } catch (err) {
+      // user may have cancelled; fall through to clipboard.
+      const reason = (err as Error).message;
+      if (!/abort|cancel/i.test(reason)) {
+        setExportNote(`Share failed: ${reason}. Trying clipboard…`);
+      }
+    }
+
+    // 2. Try clipboard.
+    try {
+      await navigator.clipboard.writeText(json);
+      setExportNote(`Copied ${json.length.toLocaleString()} chars to clipboard.`);
+      setExportText(json);
+      return;
+    } catch {
+      // fall through
+    }
+
+    // 3. Fall back to anchor-download (desktop browsers).
+    try {
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportNote("Downloaded.");
+      return;
+    } catch {
+      /* fall through */
+    }
+
+    // 4. Last resort: show inline so the user can long-press → select all.
+    setExportText(json);
+    setExportNote(
+      "Could not share or download. Tap the box below, long-press to Select All, then Copy.",
+    );
+  }
+
+  async function copyToClipboard() {
+    const json = buildSnapshot();
+    try {
+      await navigator.clipboard.writeText(json);
+      setExportNote(`Copied ${json.length.toLocaleString()} chars to clipboard.`);
+      setExportText(null);
+    } catch {
+      setExportText(json);
+      setExportNote("Clipboard blocked. Long-press the textarea below to select & copy.");
+    }
   }
 
   if (!open) {
@@ -86,29 +150,92 @@ export function DebugPanel() {
         <div>UA: <code>{navigator.userAgent}</code></div>
         {connection && (
           <>
-            <div>strategy: <code>{connection.strategy}</code></div>
-            <div>self peer: <code>{connection.selfPeerId ?? "—"}</code></div>
             <div>room: <code>{connection.roomId.slice(0, 12)}</code> · app: <code>{connection.appId}</code></div>
-            <div>peers ({connection.peerCount}): <code>{connection.peers.join(", ") || "—"}</code></div>
-            <div style={{ marginTop: 6 }}><strong>relays:</strong></div>
-            <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {connection.relays.map((r) => (
-                <li key={r.url}>
-                  <code style={{ color: r.state === "open" ? "var(--accent-2)" : "var(--warn)" }}>
-                    {r.state}
-                  </code>{" "}
-                  {r.url}
-                </li>
-              ))}
-            </ul>
+            <div>total peers: <strong>{connection.totalPeerCount}</strong></div>
+            {connection.strategies.map((strat) => (
+              <div
+                key={strat.name}
+                style={{
+                  marginTop: 8,
+                  paddingLeft: 8,
+                  borderLeft: `2px solid ${
+                    strat.peerCount > 0
+                      ? "var(--accent-2)"
+                      : strat.relaysConnected > 0
+                        ? "var(--warn)"
+                        : "var(--danger)"
+                  }`,
+                }}
+              >
+                <div>
+                  <strong style={{ color: "var(--fg-1)" }}>{strat.name}</strong>{" "}
+                  · self <code>{strat.selfPeerId.slice(0, 8)}</code>
+                  {" "}· peers ({strat.peerCount}):{" "}
+                  <code>
+                    {strat.peers.map((p) => p.slice(0, 8)).join(", ") || "—"}
+                  </code>
+                </div>
+                <ul style={{ margin: 0, paddingLeft: 16 }}>
+                  {strat.relays.map((r) => (
+                    <li key={r.url}>
+                      <code
+                        style={{
+                          color: r.state === "open" ? "var(--accent-2)" : "var(--warn)",
+                        }}
+                      >
+                        {r.state}
+                      </code>{" "}
+                      {r.url}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
           </>
         )}
         <div style={{ marginTop: 6 }}>events: {events.length} · finality: {finality.filter((f) => f.final).length}/{finality.length}</div>
       </div>
 
-      <button className="btn" onClick={exportSnapshot}>
-        Export Debug Snapshot (JSON)
-      </button>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="btn" onClick={exportSnapshot} style={{ flex: 1 }}>
+          Share / Save Snapshot
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={copyToClipboard}
+          style={{ flex: 1 }}
+        >
+          Copy to Clipboard
+        </button>
+      </div>
+
+      {exportNote && (
+        <p className="muted" style={{ fontSize: 12 }}>
+          {exportNote}
+        </p>
+      )}
+
+      {exportText && (
+        <textarea
+          readOnly
+          value={exportText}
+          onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+          style={{
+            width: "100%",
+            minHeight: 160,
+            background: "var(--bg-1)",
+            color: "var(--fg-2)",
+            border: "1px solid rgba(255,255,255,0.06)",
+            borderRadius: 8,
+            padding: 8,
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+            fontSize: 11,
+            lineHeight: 1.4,
+            resize: "vertical",
+          }}
+        />
+      )}
 
       <div className="transcript" style={{ maxHeight: 260 }}>
         {entries.slice(-200).map((e, i) => (

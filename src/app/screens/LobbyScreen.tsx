@@ -201,15 +201,26 @@ function ConnectionStatusLine({
       </p>
     );
   }
-  const { relaysConnected, relaysTotal, peerCount } = connection;
+  const totalRelaysConnected = connection.strategies.reduce(
+    (acc, s) => acc + s.relaysConnected,
+    0,
+  );
+  const totalRelays = connection.strategies.reduce(
+    (acc, s) => acc + s.relays.length,
+    0,
+  );
+  const peerCount = connection.totalPeerCount;
+  const perStrategy = connection.strategies
+    .map((s) => `${s.name}:${s.relaysConnected}/${s.relays.length}r,${s.peerCount}p`)
+    .join(" · ");
   const relayLine =
-    relaysConnected === 0
+    totalRelaysConnected === 0
       ? "Connecting to signalling relays…"
-      : `${relaysConnected}/${relaysTotal} signalling relays connected`;
+      : `${totalRelaysConnected}/${totalRelays} signalling relays connected`;
   const peerLine =
     peerCount === 0
-      ? "Searching for peers…"
-      : `${peerCount} peer${peerCount === 1 ? "" : "s"} found`;
+      ? "Searching for peers across all strategies…"
+      : `${peerCount} peer${peerCount === 1 ? "" : "s"} connected`;
   return (
     <p
       className="muted center-text"
@@ -218,6 +229,8 @@ function ConnectionStatusLine({
       {relayLine}
       <br />
       {peerLine}
+      <br />
+      <span style={{ fontSize: 10, opacity: 0.6 }}>{perStrategy}</span>
     </p>
   );
 }
