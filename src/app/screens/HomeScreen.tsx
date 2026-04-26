@@ -27,6 +27,7 @@ export function HomeScreen() {
   const setPeerInfo = useApp((s) => s.setPeerInfo);
   const removePeer = useApp((s) => s.removePeer);
   const setFinality = useApp((s) => s.setFinality);
+  const setConnection = useApp((s) => s.setConnection);
 
   const [busy, setBusy] = useState(false);
 
@@ -68,6 +69,9 @@ export function HomeScreen() {
     },
     onFinalityChange: (statuses: import("@game-log/ack-tracker").FinalityStatus[]) => {
       setFinality(statuses);
+    },
+    onConnectionStatus: (s: import("@transport/peer-mesh").ConnectionStatus) => {
+      setConnection(s);
     },
   };
 

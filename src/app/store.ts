@@ -3,7 +3,7 @@ import type { Player, PlayerId, SignedEvent } from "@protocol-core/event-types";
 import type { PlayerIdentity } from "@trust-core/identity";
 import type { LobbyState } from "@lobby/lobby-state";
 import type { WhotGameState } from "@whot-rules/state";
-import type { PeerMesh } from "@transport/peer-mesh";
+import type { ConnectionStatus, PeerMesh } from "@transport/peer-mesh";
 import type { FinalityStatus } from "@game-log/ack-tracker";
 
 export type Screen = "HOME" | "LOBBY" | "GAME" | "RESULT";
@@ -25,6 +25,7 @@ export type AppState = {
   mesh?: PeerMesh;
   peers: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }>;
   finality: FinalityStatus[];
+  connection?: ConnectionStatus;
   errorBanner?: string;
   selectedCardId?: string;
   whotShapePicker?: { cardId: string };
@@ -38,6 +39,7 @@ export type AppState = {
   appendEvent: (e: SignedEvent) => void;
   resetEvents: () => void;
   setFinality: (f: FinalityStatus[]) => void;
+  setConnection: (c: ConnectionStatus) => void;
   setPeerInfo: (peerId: string, info: { playerId?: PlayerId; displayName?: string; publicKey?: string }) => void;
   removePeer: (peerId: string) => void;
   setSelectedCard: (id?: string) => void;
@@ -78,6 +80,7 @@ export const useApp = create<AppState>((set) => ({
   appendEvent: (e) => set((s) => ({ log: [...s.log, e] })),
   resetEvents: () => set({ log: [] }),
   setFinality: (f) => set({ finality: f }),
+  setConnection: (c) => set({ connection: c }),
   setPeerInfo: (peerId, info) =>
     set((s) => ({
       peers: { ...s.peers, [peerId]: { ...s.peers[peerId], ...info } },
@@ -104,6 +107,7 @@ export const useApp = create<AppState>((set) => ({
       mesh: undefined,
       peers: {},
       finality: [],
+      connection: undefined,
       selectedCardId: undefined,
       whotShapePicker: undefined,
     }),

@@ -29,7 +29,7 @@ import {
   rulesHashOf,
   type WhotGameState,
 } from "@whot-rules/index";
-import { joinMesh, type PeerMesh } from "@transport/peer-mesh";
+import { joinMesh, type ConnectionStatus, type PeerMesh } from "@transport/peer-mesh";
 import { saveLocalLeaderboardEntry } from "@endgame/index";
 
 export type LobbyEventType =
@@ -57,6 +57,7 @@ export type SessionListeners = {
   onPeersChange?: (peers: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }>) => void;
   onFork?: (evidence: ForkEvidence) => void;
   onFinalityChange?: (status: FinalityStatus[]) => void;
+  onConnectionStatus?: (status: ConnectionStatus) => void;
 };
 
 export type Session = {
@@ -380,6 +381,9 @@ async function wireSession(o: WireOpts): Promise<Session> {
     onPeerLeave: (peerId) => {
       delete broadcastInfo[peerId];
       emitPeers();
+    },
+    onStatus: (s) => {
+      o.listeners.onConnectionStatus?.(s);
     },
     onMessage: async (msg, fromPeerId) => {
       switch (msg.kind) {

@@ -10,6 +10,7 @@ export function LobbyScreen() {
   const identity = useApp((s) => s.identity);
   const setError = useApp((s) => s.setError);
   const events = useApp((s) => s.log);
+  const connection = useApp((s) => s.connection);
   const [copied, setCopied] = useState(false);
 
   // Auto-admit join requests if host.
@@ -35,6 +36,7 @@ export function LobbyScreen() {
     return (
       <div className="center-message">
         <div className="spinner" /> Connecting to peers…
+        <ConnectionStatusLine connection={connection} />
       </div>
     );
   }
@@ -129,6 +131,7 @@ export function LobbyScreen() {
         {lobby.players.length === 0 ? (
           <div className="center-message">
             <div className="spinner" /> Waiting to connect to host…
+            <ConnectionStatusLine connection={connection} />
           </div>
         ) : (
           lobby.players.map((p) => (
@@ -174,7 +177,41 @@ export function LobbyScreen() {
             Waiting for the host to start the game…
           </p>
         )}
+        <ConnectionStatusLine connection={connection} />
       </section>
     </>
+  );
+}
+
+function ConnectionStatusLine({
+  connection,
+}: {
+  connection?: import("@transport/peer-mesh").ConnectionStatus;
+}) {
+  if (!connection) {
+    return (
+      <p className="muted center-text" style={{ fontSize: 12, marginTop: 8 }}>
+        Initialising…
+      </p>
+    );
+  }
+  const { relaysConnected, relaysTotal, peerCount } = connection;
+  const relayLine =
+    relaysConnected === 0
+      ? "Connecting to signalling relays…"
+      : `${relaysConnected}/${relaysTotal} signalling relays connected`;
+  const peerLine =
+    peerCount === 0
+      ? "Searching for peers…"
+      : `${peerCount} peer${peerCount === 1 ? "" : "s"} found`;
+  return (
+    <p
+      className="muted center-text"
+      style={{ fontSize: 12, marginTop: 8, lineHeight: 1.5 }}
+    >
+      {relayLine}
+      <br />
+      {peerLine}
+    </p>
   );
 }
