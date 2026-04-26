@@ -149,7 +149,8 @@ export function GameScreen() {
       <div className="card-panel" style={{ padding: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 8px" }}>
           <strong>Your hand · {myHand.length}</strong>
-          <span className="muted">
+          <span className="muted" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <FinalityDot />
             {isMyTurn ? "Your turn" : `${nameOf(currentPlayer(game))}'s turn`}
           </span>
         </div>
@@ -205,6 +206,28 @@ export function GameScreen() {
         </div>
       )}
     </div>
+  );
+}
+
+function FinalityDot() {
+  const finality = useApp((s) => s.finality);
+  const tip = finality[finality.length - 1];
+  if (!tip) return null;
+  const final = tip.final;
+  const partial = tip.ackCount > 0 && !final;
+  const cls = final ? "ready" : partial ? "" : "notready";
+  const title = `${tip.ackCount}/${tip.required} acks · seq #${tip.sequence}`;
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      className={`dot ${cls}`}
+      style={
+        partial
+          ? { background: "var(--warn)", boxShadow: "0 0 0 4px rgba(245,158,11,0.18)" }
+          : undefined
+      }
+    />
   );
 }
 

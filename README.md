@@ -32,6 +32,7 @@ The codebase is organised as a single Vite app with internal packages under
 | `lobby` | Lobby state machine: join / ready / lock |
 | `transport` | WebRTC peer mesh (untrusted public-tracker signalling via Trystero) |
 | `endgame` | Outcome summary + local leaderboard (browser storage) |
+| `test-harness` | Simulated network with malicious-player nodes for adversarial tests |
 
 The single React app under `src/app/` glues these together and renders the
 mobile-friendly UI.
@@ -44,6 +45,14 @@ mobile-friendly UI.
 - Each event references the previous event's hash, forming an append-only
   chain. Invalid moves are rejected by the deterministic reducer; conflicting
   events at the same chain position are flagged as fork evidence.
+- Every event also receives a **signed ACK** from each rostered peer.
+  `AckTracker` reports finality once every roster member has acknowledged an
+  event. The result screen surfaces per-event finality and lets any player
+  export a JSON **dispute bundle** containing the full signed log + collected
+  evidence (forks, invalid events).
+- On reconnect or out-of-order delivery, peers detect gaps via sequence /
+  hash mismatch and pull missing events with `MISSING_EVENTS`. A periodic
+  `PING` exchanges tip hashes so peers stay in sync.
 - Dealer-mode shuffle is used in this MVP: the deck order is derived from a
   shared seed published in the `GAME_INITIALISED` event. The `FairDeck`
   interface in the RFC is the next-phase upgrade path to a Byzantine-fair
@@ -75,8 +84,24 @@ event sequence, every browser converges to the same state.
 ## Testing
 
 ```bash
-npm test            # 29 unit tests over deck, reducer, event log, lobby, canonical JSON
+npm test            # 49 unit + property tests + malicious-player harness
 ```
+
+The test suite covers:
+
+- canonical JSON stability across key orderings
+- deterministic shuffle reproducibility
+- standard 54-card Whot! deck shape
+- the rules reducer (turn order, special cards, stacking, win detection)
+- `EventLog` chain enforcement, signature verification
+- `ForkDetector` equivocation detection
+- `AckTracker` finality computation
+- `DisputeBundle` round-trip
+- property-based reducer invariants (card conservation across plays/draws,
+  determinism, illegal-move rejection)
+- malicious-player harness covering tampered payloads, forged hashes, bad
+  chain references, replay attacks, equivocation, impersonation, and forged
+  ACKs
 
 ## Repository layout
 
@@ -102,6 +127,7 @@ vite.config.ts
 ## Roadmap
 
 - [x] Phase 1 MVP — dealer-mode social-trust game.
-- [ ] Phase 2 — full all-player ACK / replay + dispute bundle export.
+- [x] Phase 2 — all-player ACK finality, gap-fill replay, dispute bundle
+      export, property tests, malicious-player harness.
 - [ ] Phase 3 — friend-group leaderboard backend (Cloudflare D1).
 - [ ] Phase 4 — Byzantine-fair deck via reviewed mental-poker protocol.

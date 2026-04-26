@@ -1,5 +1,6 @@
 import { useApp } from "../store";
 import { summariseOutcome } from "@endgame/index";
+import { disputeBundleFilename } from "@game-log/dispute";
 import { getSession, setSession } from "./HomeScreen";
 
 export function ResultScreen() {
@@ -32,6 +33,21 @@ export function ResultScreen() {
     const a = document.createElement("a");
     a.href = url;
     a.download = `whot-transcript-${game!.rulesHash.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportDisputeBundle() {
+    const session = getSession();
+    if (!session) return;
+    const bundle = session.exportDisputeBundle();
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = disputeBundleFilename(bundle);
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -69,18 +85,78 @@ export function ResultScreen() {
         <button className="btn" onClick={exportTranscript}>
           Export Transcript ({events.length} events)
         </button>
+        <button className="btn btn-ghost" onClick={exportDisputeBundle}>
+          Export Dispute Bundle
+        </button>
       </section>
 
+      <FinalitySummary />
+
+
+      <FinalityAuditFooter />
+    </>
+  );
+}
+
+function FinalitySummary() {
+  const finality = useApp((s) => s.finality);
+  if (finality.length === 0) return null;
+  const final = finality.filter((f) => f.final).length;
+  const total = finality.length;
+  return (
+    <section className="card-panel">
+      <h2>Event Finality</h2>
+      <p className="muted">
+        {final} / {total} events have been acknowledged by every rostered
+        player. Non-final events remain provisional but are still cryptographically
+        signed.
+      </p>
+    </section>
+  );
+}
+
+function FinalityAuditFooter() {
+  const events = useApp((s) => s.log);
+  const lobby = useApp((s) => s.lobby);
+  const finality = useApp((s) => s.finality);
+  const finalByHash = new Map(finality.map((f) => [f.eventHash, f]));
+  const names: Record<string, string> = {};
+  if (lobby) for (const p of lobby.players) names[p.playerId] = p.displayName;
+  return (
+    <>
       <section className="card-panel">
         <h2>Audit Log</h2>
         <div className="transcript">
-          {events.map((e) => (
-            <div className="ev" key={e.eventHash}>
-              <span className="seq">#{e.sequence}</span>
-              <span className="type">{e.type}</span>
-              <span>{names[e.actor] ?? e.actor.slice(0, 6)}</span>
-            </div>
-          ))}
+          {events.map((e) => {
+            const f = finalByHash.get(e.eventHash);
+            const mark = f
+              ? f.final
+                ? "✓"
+                : `${f.ackCount}/${f.required}`
+              : "";
+            return (
+              <div className="ev" key={e.eventHash}>
+                <span className="seq">#{e.sequence}</span>
+                <span className="type">{e.type}</span>
+                <span style={{ flex: 1 }}>
+                  {names[e.actor] ?? e.actor.slice(0, 6)}
+                </span>
+                <span
+                  className="seq"
+                  title={
+                    f
+                      ? `acks: ${f.ackingPlayers.length}/${f.required}`
+                      : ""
+                  }
+                  style={{
+                    color: f?.final ? "var(--accent)" : "var(--warn)",
+                  }}
+                >
+                  {mark}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </section>
     </>

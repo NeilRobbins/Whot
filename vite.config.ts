@@ -13,6 +13,7 @@ export default defineConfig({
       "@lobby": fileURLToPath(new URL("./src/packages/lobby", import.meta.url)),
       "@transport": fileURLToPath(new URL("./src/packages/transport", import.meta.url)),
       "@endgame": fileURLToPath(new URL("./src/packages/endgame", import.meta.url)),
+      "@test-harness": fileURLToPath(new URL("./src/packages/test-harness", import.meta.url)),
     },
   },
   server: {

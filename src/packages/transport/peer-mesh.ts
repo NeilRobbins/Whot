@@ -1,13 +1,14 @@
 import { joinRoom, type Room } from "trystero/torrent";
 import type { SignedEvent, PlayerId } from "@protocol-core/event-types";
+import type { SignedAck } from "@trust-core/acks";
 
 export type WireMessage =
   | { kind: "EVENT"; event: SignedEvent }
   | { kind: "EVENT_BATCH"; events: SignedEvent[] }
-  | { kind: "ACK"; eventHash: string }
+  | { kind: "ACK"; ack: SignedAck }
   | { kind: "MISSING_EVENTS"; fromSequence: number }
-  | { kind: "PING"; lastSeenEventHash: string }
-  | { kind: "PONG"; lastSeenEventHash: string }
+  | { kind: "PING"; lastSeenEventHash: string; tipSequence: number }
+  | { kind: "PONG"; lastSeenEventHash: string; tipSequence: number }
   | { kind: "HELLO"; playerId: PlayerId; displayName: string; publicKey: string }
   | { kind: "LOBBY_STATE"; players: Array<{ playerId: PlayerId; displayName: string; publicKey: string }>; ready: Record<PlayerId, boolean>; rosterLocked: boolean };
 

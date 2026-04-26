@@ -4,6 +4,7 @@ import type { PlayerIdentity } from "@trust-core/identity";
 import type { LobbyState } from "@lobby/lobby-state";
 import type { WhotGameState } from "@whot-rules/state";
 import type { PeerMesh } from "@transport/peer-mesh";
+import type { FinalityStatus } from "@game-log/ack-tracker";
 
 export type Screen = "HOME" | "LOBBY" | "GAME" | "RESULT";
 
@@ -23,6 +24,7 @@ export type AppState = {
   log: SignedEvent[];
   mesh?: PeerMesh;
   peers: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }>;
+  finality: FinalityStatus[];
   errorBanner?: string;
   selectedCardId?: string;
   whotShapePicker?: { cardId: string };
@@ -35,6 +37,7 @@ export type AppState = {
   setMesh: (m: PeerMesh | undefined) => void;
   appendEvent: (e: SignedEvent) => void;
   resetEvents: () => void;
+  setFinality: (f: FinalityStatus[]) => void;
   setPeerInfo: (peerId: string, info: { playerId?: PlayerId; displayName?: string; publicKey?: string }) => void;
   removePeer: (peerId: string) => void;
   setSelectedCard: (id?: string) => void;
@@ -61,6 +64,7 @@ export const useApp = create<AppState>((set) => ({
   displayName: initialDisplayName(),
   log: [],
   peers: {},
+  finality: [],
   setDisplayName: (name) => {
     localStorage.setItem("whot.displayName", name);
     set({ displayName: name });
@@ -73,6 +77,7 @@ export const useApp = create<AppState>((set) => ({
   setMesh: (m) => set({ mesh: m }),
   appendEvent: (e) => set((s) => ({ log: [...s.log, e] })),
   resetEvents: () => set({ log: [] }),
+  setFinality: (f) => set({ finality: f }),
   setPeerInfo: (peerId, info) =>
     set((s) => ({
       peers: { ...s.peers, [peerId]: { ...s.peers[peerId], ...info } },
@@ -98,6 +103,7 @@ export const useApp = create<AppState>((set) => ({
       role: undefined,
       mesh: undefined,
       peers: {},
+      finality: [],
       selectedCardId: undefined,
       whotShapePicker: undefined,
     }),

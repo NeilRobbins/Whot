@@ -2,7 +2,17 @@ import type { BaseEvent, Player, PlayerId, SignedEvent } from "@protocol-core/ev
 import { ZERO_HASH, hashCanonical } from "@protocol-core/hashing";
 import type { PlayerIdentity } from "@trust-core/identity";
 import { signEvent } from "@trust-core/signatures";
-import { EventLog, ForkDetector, type ForkEvidence } from "@game-log/index";
+import { signAck } from "@trust-core/acks";
+import {
+  AckTracker,
+  EventLog,
+  ForkDetector,
+  buildDisputeBundle,
+  type DisputeBundle,
+  type DisputeEvidence,
+  type FinalityStatus,
+  type ForkEvidence,
+} from "@game-log/index";
 import {
   newLobby,
   admit,
@@ -46,6 +56,7 @@ export type SessionListeners = {
   onError?: (msg: string) => void;
   onPeersChange?: (peers: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }>) => void;
   onFork?: (evidence: ForkEvidence) => void;
+  onFinalityChange?: (status: FinalityStatus[]) => void;
 };
 
 export type Session = {
@@ -58,6 +69,8 @@ export type Session = {
   lobby: () => LobbyState;
   game: () => WhotGameState | undefined;
   events: () => readonly SignedEvent[];
+  finality: () => FinalityStatus[];
+  exportDisputeBundle: () => DisputeBundle;
   // host actions
   admitPlayer: (p: Player) => Promise<void>;
   removePlayer: (id: PlayerId) => Promise<void>;
@@ -161,6 +174,9 @@ async function wireSession(o: WireOpts): Promise<Session> {
   let game: WhotGameState | undefined;
   const log = new EventLog();
   const fork = new ForkDetector();
+  const acks = new AckTracker();
+  const evidence: DisputeEvidence[] = [];
+  const pendingEvents: SignedEvent[] = []; // events arrived ahead of tip
 
   const broadcastInfo: Record<string, { playerId?: PlayerId; displayName?: string; publicKey?: string }> = {};
 
@@ -169,6 +185,16 @@ async function wireSession(o: WireOpts): Promise<Session> {
   const emitGame = () => o.listeners.onGameChange?.(game);
   const emitError = (m: string) => o.listeners.onError?.(m);
   const emitPeers = () => o.listeners.onPeersChange?.({ ...broadcastInfo });
+  const emitFinality = () =>
+    o.listeners.onFinalityChange?.(log.all().map((e) => acks.status(e)));
+
+  function refreshRosterForAcks(): void {
+    // Until roster lock, we treat the currently-known lobby players as the
+    // roster. After roster lock, we use the locked roster.
+    const roster = lobby.rosterLockedRoster ?? lobby.players.map((p) => p.playerId);
+    acks.setRoster(roster);
+    emitFinality();
+  }
 
   const sign = async <T extends string, P>(type: T, payload: P): Promise<SignedEvent<T, P>> => {
     const base: BaseEvent<T, P> = {
@@ -185,17 +211,58 @@ async function wireSession(o: WireOpts): Promise<Session> {
   };
 
   const append = async (event: SignedEvent): Promise<boolean> => {
-    const evidence = fork.observe(event);
-    if (evidence) o.listeners.onFork?.(evidence);
+    const forkEv = fork.observe(event);
+    if (forkEv) {
+      o.listeners.onFork?.(forkEv);
+      evidence.push(forkEv);
+    }
     const r = await log.append(event);
     if (!r.ok) {
+      if (r.reason === "OUT_OF_ORDER" && event.sequence > log.tipSequence + 1) {
+        // Buffer the event for later, request the gap.
+        if (!pendingEvents.some((e) => e.eventHash === event.eventHash)) {
+          pendingEvents.push(event);
+        }
+        sendMissingRequest(log.tipSequence + 1);
+        return false;
+      }
+      if (r.reason === "BAD_SIGNATURE") {
+        evidence.push({ kind: "INVALID_EVENT", event, reason: "BAD_SIGNATURE" });
+        emitError(`event rejected: BAD_SIGNATURE`);
+        return false;
+      }
       if (r.reason !== "DUPLICATE") emitError(`event rejected: ${r.reason}`);
       return false;
     }
+    acks.recordSelfAck(event);
     emit(event);
     applyEventToState(event);
+    refreshRosterForAcks();
+    // Try to flush any queued events whose sequence now matches.
+    await flushPending();
     return true;
   };
+
+  let mesh: PeerMesh | undefined;
+  function sendMissingRequest(fromSequence: number): void {
+    mesh?.send({ kind: "MISSING_EVENTS", fromSequence });
+  }
+
+  async function flushPending(): Promise<void> {
+    if (pendingEvents.length === 0) return;
+    pendingEvents.sort((a, b) => a.sequence - b.sequence);
+    let progress = true;
+    while (progress) {
+      progress = false;
+      const nextIdx = pendingEvents.findIndex(
+        (e) => e.sequence === log.tipSequence + 1 && e.previousEventHash === log.tipHash,
+      );
+      if (nextIdx === -1) break;
+      const next = pendingEvents.splice(nextIdx, 1)[0]!;
+      await append(next);
+      progress = true;
+    }
+  }
 
   function applyEventToState(event: SignedEvent): void {
     const t = event.type as LobbyEventType | GameEventType;
@@ -297,17 +364,17 @@ async function wireSession(o: WireOpts): Promise<Session> {
   }
 
   // Wire the mesh.
-  const mesh: PeerMesh = joinMesh(o.roomId, {
+  mesh = joinMesh(o.roomId, {
     onPeerJoin: async (peerId) => {
       // Send our HELLO and full event log to the new peer.
-      mesh.sendTo(peerId, {
+      mesh!.sendTo(peerId, {
         kind: "HELLO",
         playerId: o.identity.playerId,
         displayName: o.displayName,
         publicKey: o.identity.publicKey,
       });
       if (log.length > 0) {
-        mesh.sendTo(peerId, { kind: "EVENT_BATCH", events: log.all().slice() });
+        mesh!.sendTo(peerId, { kind: "EVENT_BATCH", events: log.all().slice() });
       }
     },
     onPeerLeave: (peerId) => {
@@ -325,7 +392,7 @@ async function wireSession(o: WireOpts): Promise<Session> {
           emitPeers();
           // If host: respond with current lobby + log.
           if (o.isHost) {
-            mesh.sendTo(fromPeerId, { kind: "EVENT_BATCH", events: log.all().slice() });
+            mesh!.sendTo(fromPeerId, { kind: "EVENT_BATCH", events: log.all().slice() });
           }
           // Guests issue join request once they see who the host is.
           if (!o.isHost && lobby.hostPlayerId === "" && log.length === 0) {
@@ -335,11 +402,13 @@ async function wireSession(o: WireOpts): Promise<Session> {
         }
         case "EVENT": {
           await append(msg.event);
+          await sendAckFor(msg.event);
           break;
         }
         case "EVENT_BATCH": {
           for (const e of msg.events) {
             await append(e);
+            await sendAckFor(e);
           }
           // If guest, ensure we've requested to join after seeing GAME_CREATED.
           if (!o.isHost && lobby.phase === "JOINING" && !lobby.players.some((p) => p.playerId === o.identity.playerId)) {
@@ -348,16 +417,48 @@ async function wireSession(o: WireOpts): Promise<Session> {
           break;
         }
         case "MISSING_EVENTS": {
-          mesh.sendTo(fromPeerId, {
+          mesh!.sendTo(fromPeerId, {
             kind: "EVENT_BATCH",
             events: log.since(msg.fromSequence - 1),
           });
           break;
         }
-        case "ACK":
-        case "PING":
-        case "PONG":
+        case "ACK": {
+          const ok = await acks.record(msg.ack);
+          if (ok) {
+            emitFinality();
+          } else {
+            evidence.push({
+              kind: "INVALID_EVENT",
+              event: { ...({} as SignedEvent) },
+              reason: "BAD_ACK_SIGNATURE",
+            });
+          }
           break;
+        }
+        case "PING": {
+          mesh!.sendTo(fromPeerId, {
+            kind: "PONG",
+            lastSeenEventHash: log.tipHash,
+            tipSequence: log.tipSequence,
+          });
+          if (msg.tipSequence > log.tipSequence) {
+            mesh!.sendTo(fromPeerId, {
+              kind: "MISSING_EVENTS",
+              fromSequence: log.tipSequence + 1,
+            });
+          }
+          break;
+        }
+        case "PONG": {
+          if (msg.tipSequence > log.tipSequence) {
+            mesh!.sendTo(fromPeerId, {
+              kind: "MISSING_EVENTS",
+              fromSequence: log.tipSequence + 1,
+            });
+          }
+          break;
+        }
         case "LOBBY_STATE":
           // informational; authoritative state derives from event log
           break;
@@ -368,8 +469,29 @@ async function wireSession(o: WireOpts): Promise<Session> {
   async function broadcast(event: SignedEvent): Promise<void> {
     const ok = await append(event);
     if (!ok) return;
-    mesh.send({ kind: "EVENT", event });
+    mesh!.send({ kind: "EVENT", event });
   }
+
+  async function sendAckFor(event: SignedEvent): Promise<void> {
+    if (event.actor === o.identity.playerId) return; // self-ACK already recorded
+    const ack = await signAck(
+      event.eventHash,
+      o.identity.playerId,
+      o.identity.privateKey,
+      o.identity.publicKey,
+    );
+    mesh!.send({ kind: "ACK", ack });
+  }
+
+  // Periodic PING for tip-sync detection.
+  const pingInterval = setInterval(() => {
+    if (!mesh) return;
+    mesh.send({
+      kind: "PING",
+      lastSeenEventHash: log.tipHash,
+      tipSequence: log.tipSequence,
+    });
+  }, 5000);
 
   async function issueJoinRequest(): Promise<void> {
     const me: Player = {
@@ -479,7 +601,22 @@ async function wireSession(o: WireOpts): Promise<Session> {
       const e = await sign("ACCEPT_PENALTY", { drawnCards });
       await broadcast(e);
     },
-    leave: () => mesh.leave(),
+    leave: () => {
+      clearInterval(pingInterval);
+      mesh?.leave();
+    },
+    finality: () => log.all().map((e) => acks.status(e)),
+    exportDisputeBundle: () =>
+      buildDisputeBundle({
+        gameId: o.gameId,
+        rulesHash: lobby.rulesHash,
+        rosterHash: hashCanonical(
+          lobby.rosterLockedRoster ?? lobby.players.map((p) => p.playerId),
+        ),
+        events: log.all(),
+        finalStateHash: game ? hashCanonical(game.outcome ?? null) : undefined,
+        evidence,
+      }),
   };
 }
 

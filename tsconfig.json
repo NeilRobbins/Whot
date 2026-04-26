@@ -28,7 +28,8 @@
       "@whot-rules/*": ["src/packages/whot-rules/*"],
       "@lobby/*": ["src/packages/lobby/*"],
       "@transport/*": ["src/packages/transport/*"],
-      "@endgame/*": ["src/packages/endgame/*"]
+      "@endgame/*": ["src/packages/endgame/*"],
+      "@test-harness/*": ["src/packages/test-harness/*"]
     }
   },
   "include": ["src"]

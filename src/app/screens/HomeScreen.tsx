@@ -26,6 +26,7 @@ export function HomeScreen() {
   const appendEvent = useApp((s) => s.appendEvent);
   const setPeerInfo = useApp((s) => s.setPeerInfo);
   const removePeer = useApp((s) => s.removePeer);
+  const setFinality = useApp((s) => s.setFinality);
 
   const [busy, setBusy] = useState(false);
 
@@ -64,6 +65,9 @@ export function HomeScreen() {
       for (const [id, info] of Object.entries(peers)) {
         setPeerInfo(id, info);
       }
+    },
+    onFinalityChange: (statuses: import("@game-log/ack-tracker").FinalityStatus[]) => {
+      setFinality(statuses);
     },
   };
 
