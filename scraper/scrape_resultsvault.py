@@ -39,6 +39,8 @@ from urllib.parse import urlparse, parse_qs
 import requests
 from selectolax.parser import HTMLParser
 
+import rv_api
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
@@ -113,6 +115,24 @@ class Bowl:
 
 
 @dataclass
+class Ball:
+    over: int | None = None
+    ball: int | None = None
+    innings_number: int | None = None
+    batter: str = ""
+    bowler: str = ""
+    runs: int | None = None
+    extras: int | None = None
+    extras_type: str = ""
+    dismissed: str = ""
+    desc: str = ""
+    # Raw ids kept as a fallback: youth feeds sometimes use match-local
+    # placeholder ids in PlayerPerfs that don't resolve to ball-feed ids.
+    batter_id: int | None = None
+    bowler_id: int | None = None
+
+
+@dataclass
 class Innings:
     team: str = ""
     total_runs: int | None = None
@@ -122,6 +142,11 @@ class Innings:
     batting: list = field(default_factory=list)
     fall_of_wickets: list = field(default_factory=list)
     bowling: list = field(default_factory=list)
+    # True for pairs/net-score (youth) formats where 'total_runs' is a net
+    # score and batters retire rather than being dismissed -- the standard
+    # sum(batting)+extras==total reconciliation does not apply.
+    net_score_format: bool = False
+    balls: list = field(default_factory=list)
 
 
 @dataclass
@@ -182,12 +207,68 @@ def matchid_from_url(url: str) -> str:
     return hashlib.sha1(url.encode()).hexdigest()[:10]
 
 
+def api_ids_from_url(url: str):
+    """Return (entityid, matchid) for ResultsVault gateway URLs, else (None, None).
+
+    The JSON API needs both the ResultsVault ``matchid`` and the ``entityid``
+    site context, which the gateway URL carries directly -- so we can hit the
+    structured feed without even following the redirect.
+    """
+    qs = parse_qs(urlparse(url).query)
+    entity = (qs.get("entityid") or qs.get("entity_id") or [None])[0]
+    matchid = (qs.get("matchid") or qs.get("match_id") or [None])[0]
+    if entity and matchid:
+        return entity, matchid
+    return None, None
+
+
+def _parse_rv_date(s):
+    """'/Date(1782030600000+0100)/' -> ISO 8601 string, or the raw input."""
+    if not s:
+        return ""
+    m = re.search(r"/Date\((\d+)([+-]\d{4})?\)/", s)
+    if not m:
+        return str(s)
+    ms = int(m.group(1))
+    off = m.group(2) or "+0000"
+    sign = 1 if off[0] == "+" else -1
+    offmin = sign * (int(off[1:3]) * 60 + int(off[3:5]))
+    tz = timezone(__import__("datetime").timedelta(minutes=offmin))
+    return datetime.fromtimestamp(ms / 1000, tz).isoformat()
+
+
 # --------------------------------------------------------------------------- #
 # Fetching (cache + retries + polite delay)
 # --------------------------------------------------------------------------- #
 def _cache_path(url: str) -> str:
     h = hashlib.sha1(url.encode()).hexdigest()[:16]
     return os.path.join(RAW_DIR, f"{h}.html")
+
+
+def fetch_api_json(entityid, matchid, session, force=False, with_balls=False):
+    """Fetch (and cache) the ResultsVault JSON match doc + optional balls."""
+    mpath = os.path.join(RAW_DIR, f"api_{matchid}.json")
+    bpath = os.path.join(RAW_DIR, f"api_{matchid}_balls.json")
+    if not force and os.path.exists(mpath) and os.path.getsize(mpath) > 0:
+        log.info("api cache hit  match %s", matchid)
+        with open(mpath, encoding="utf-8") as fh:
+            data = json.load(fh)
+    else:
+        data = rv_api.fetch_match(entityid, matchid, session)
+        with open(mpath, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        time.sleep(POLITE_DELAY)
+    balls = []
+    if with_balls:
+        if not force and os.path.exists(bpath) and os.path.getsize(bpath) > 0:
+            with open(bpath, encoding="utf-8") as fh:
+                balls = json.load(fh)
+        else:
+            balls = rv_api.fetch_balls(entityid, matchid, session)
+            with open(bpath, "w", encoding="utf-8") as fh:
+                json.dump(balls, fh, ensure_ascii=False)
+            time.sleep(POLITE_DELAY)
+    return data, balls
 
 
 def fetch(url: str, session: requests.Session, force: bool = False) -> str:
@@ -574,10 +655,168 @@ def parse_match(html: str, url: str, problems: list) -> Document:
 
 
 # --------------------------------------------------------------------------- #
+# JSON API -> Document mapping
+# --------------------------------------------------------------------------- #
+# ResultsVault dismissal codes (dismissal_text) -> normalised how_out.
+_DISMISSAL = {
+    "no": "not out", "rtno": "retired not out", "rt": "retired out",
+    "rto": "retired out", "c": "caught", "ct": "caught", "b": "bowled",
+    "lbw": "lbw", "st": "stumped", "ro": "run out", "rout": "run out",
+    "hw": "hit wicket", "hb": "handled ball", "obs": "obstructing",
+    "to": "timed out", "dnb": "did not bat", "absent": "absent",
+}
+
+
+def _is_batting_perf(p):
+    return "balls" in p  # batting perfs carry balls faced
+
+
+def _is_bowling_perf(p):
+    return "overs" in p and "balls" not in p  # bowling perfs carry overs
+
+
+def map_api_to_document(data: dict, balls: list, url: str, matchid: str,
+                        problems: list) -> Document:
+    """Map the ResultsVault JSON match document into our schema."""
+    match = Match(match_id=str(matchid))
+    match.competition_grade = (data.get("grade_name") or "").strip()
+    match.date = _parse_rv_date(data.get("date1"))
+    match.ground = (data.get("venue_name") or "").strip()
+    match.status = (data.get("score_text") or "").strip()
+    match.result = match.status
+    toss = (data.get("toss_won_by") or "").strip()
+    match.toss = f"{toss} won the toss" if toss else ""
+    match.teams = Teams(home=(data.get("home_name") or "").strip(),
+                        away=(data.get("away_name") or "").strip())
+
+    teams = data.get("MatchTeams") or []
+
+    # Global player id -> name map (both teams) for dismisser/ball resolution.
+    # Index by both player_id and external_id since the ball feed and the perf
+    # feed don't always agree on which id they use.
+    id2name = {}
+    for t in teams:
+        for inn in (t.get("Innings") or []):
+            for p in (inn.get("PlayerPerfs") or []):
+                nm = (p.get("player_name") or "").strip()
+                if not nm:
+                    continue
+                for key in (p.get("player_id"), p.get("external_id")):
+                    if key is not None:
+                        id2name[key] = nm
+                        try:
+                            id2name[int(key)] = nm
+                        except (ValueError, TypeError):
+                            pass
+
+    def name_of(pid):
+        return id2name.get(pid, "")
+
+    innings = []
+    for t in teams:
+        team_name = (t.get("team_name") or "").strip()
+        for inn in (t.get("Innings") or []):
+            o = Innings(team=team_name)
+            o.total_runs = inn.get("runs")
+            o.wickets = inn.get("wickets")
+            ov = inn.get("overs_bowled")
+            o.overs = float(ov) if ov is not None else None
+            o.extras = Extras(
+                byes=inn.get("byes") or 0,
+                leg_byes=inn.get("leg_byes") or 0,
+                wides=inn.get("wides") or 0,
+                no_balls=inn.get("no_balls") or 0,
+                total=inn.get("extras") or 0,
+            )
+            perfs = inn.get("PlayerPerfs") or []
+            # batting
+            for p in perfs:
+                if not _is_batting_perf(p):
+                    continue
+                runs = p.get("runs")
+                balls_faced = p.get("balls")
+                code = (p.get("dismissal_text") or "").strip().lower()
+                how = _DISMISSAL.get(code, p.get("dismissal_text") or "")
+                bowler = fielder = ""
+                if how in ("caught", "bowled", "lbw", "stumped", "hit wicket"):
+                    bowler = name_of(p.get("dismisser1_id"))
+                    if how in ("caught", "stumped"):
+                        fielder = name_of(p.get("dismisser2_id"))
+                elif how == "run out":
+                    fielder = (name_of(p.get("dismisser1_id"))
+                               or name_of(p.get("dismisser2_id")))
+                sr = (round(runs / balls_faced * 100, 2)
+                      if runs is not None and balls_faced else None)
+                o.batting.append(Bat(
+                    name=(p.get("player_name") or "").strip(),
+                    how_out=how, bowler=bowler, fielder=fielder,
+                    runs=runs, balls=balls_faced,
+                    fours=p.get("fours"), sixes=p.get("sixes"), sr=sr))
+                if runs is not None and runs < 0:
+                    o.net_score_format = True
+            # bowling
+            for p in perfs:
+                if not _is_bowling_perf(p):
+                    continue
+                overs = p.get("overs")
+                runs = p.get("runs")
+                econ = (round(runs / overs, 2)
+                        if runs is not None and overs else None)
+                o.bowling.append(Bowl(
+                    name=(p.get("player_name") or "").strip(),
+                    overs=float(overs) if overs is not None else None,
+                    maidens=p.get("maidens"), runs=runs,
+                    wickets=p.get("wickets"), wides=p.get("wides"),
+                    no_balls=p.get("no_balls"), econ=econ))
+            # fall of wickets (perfs that recorded a fall score)
+            fows = [p for p in perfs
+                    if _is_batting_perf(p) and p.get("fow") is not None]
+            fows.sort(key=lambda p: p.get("fow_order") or 0)
+            for p in fows:
+                o.fall_of_wickets.append(Fow(
+                    wicket_no=p.get("fow_order"), score=p.get("fow"),
+                    batsman_out=(p.get("player_name") or "").strip()))
+            innings.append(o)
+
+    # ball-by-ball (optional)
+    if balls:
+        by_innings = {}
+        for b in balls:
+            o = Ball(
+                over=b.get("over_no"), ball=b.get("ball_no_disp"),
+                innings_number=b.get("innings_number"),
+                batter=name_of(b.get("batter_id")),
+                bowler=name_of(b.get("bowler_id")),
+                runs=b.get("runs_bat"), extras=b.get("runs_extra"),
+                extras_type=str(b.get("extras_type") or ""),
+                dismissed=name_of(b.get("dismissed_batter_id")),
+                desc=(b.get("l_desc") or b.get("s_desc") or "").strip(),
+                batter_id=b.get("batter_id"), bowler_id=b.get("bowler_id"))
+            by_innings.setdefault(b.get("innings_number"), []).append(o)
+        # attach by innings_number order to innings in document order
+        for idx, num in enumerate(sorted(by_innings)):
+            if idx < len(innings):
+                innings[idx].balls = by_innings[num]
+
+    meta = {
+        "source_url": url,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "source": "resultsvault-json-api",
+    }
+    return Document(match=match, innings=innings, meta=meta)
+
+
+# --------------------------------------------------------------------------- #
 # Reconciliation
 # --------------------------------------------------------------------------- #
 def reconcile(doc: Document):
     for inn in doc.innings:
+        if inn.net_score_format:
+            # Pairs/net-score: total is a net figure and batters retire rather
+            # than being dismissed; the standard identities don't hold.
+            log.info("RECON %s/%s: net-score format, skipping run/wicket "
+                     "reconciliation", doc.match.match_id, inn.team)
+            continue
         bat_runs = sum(b.runs or 0 for b in inn.batting)
         expected = bat_runs + (inn.extras.total or 0)
         if inn.total_runs is not None and expected != inn.total_runs:
@@ -624,13 +863,16 @@ def print_summary(doc: Document):
     for inn in doc.innings:
         score = (f"{inn.total_runs}/{inn.wickets}"
                  if inn.total_runs is not None else "-")
+        tag = " [net score]" if inn.net_score_format else ""
+        balls = f"  bxb={len(inn.balls)}" if inn.balls else ""
         print(f"  {inn.team[:28]:28s} {score:>10s} "
-              f"{str(inn.overs or '-'):>7s} {str(inn.extras.total):>7s}")
+              f"{str(inn.overs or '-'):>7s} {str(inn.extras.total):>7s}{tag}{balls}")
         top = sorted((b for b in inn.batting if b.runs is not None),
                      key=lambda b: b.runs, reverse=True)[:3]
         for b in top:
-            print(f"      {b.name[:24]:24s} {b.runs:>3} "
-                  f"({b.balls if b.balls is not None else '-'})  {b.how_out}")
+            dismissal = b.how_out + (f" b {b.bowler}" if b.bowler else "")
+            print(f"      {b.name[:24]:24s} {b.runs:>4} "
+                  f"({b.balls if b.balls is not None else '-'})  {dismissal}")
 
 
 # --------------------------------------------------------------------------- #
@@ -658,6 +900,10 @@ def main(argv=None):
     ap.add_argument("--urls", help="file with one URL per line")
     ap.add_argument("--force", action="store_true",
                     help="ignore raw cache and re-fetch")
+    ap.add_argument("--balls", action="store_true",
+                    help="also fetch ball-by-ball (JSON API only)")
+    ap.add_argument("--html-only", action="store_true",
+                    help="skip the JSON API and parse the HTML scorecard")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
@@ -678,16 +924,36 @@ def main(argv=None):
     combined = []
     for url in urls:
         problems = []
-        try:
-            html = fetch(url, session, force=args.force)
-        except Exception as exc:  # network failure for one match shouldn't kill all
-            log.error("skip %s: %s", url, exc)
-            continue
-        try:
-            doc = parse_match(html, url, problems)
-        except Exception as exc:
-            log.exception("parse failed for %s: %s", url, exc)
-            continue
+        doc = None
+
+        # Preferred path: the structured JSON API (needs entityid + matchid,
+        # which ResultsVault gateway URLs carry). Gives full batting/bowling/
+        # fielding perfs and optional ball-by-ball, incl. formats the HTML
+        # pages don't render. Falls back to HTML on any failure.
+        entityid, api_matchid = api_ids_from_url(url)
+        if entityid and api_matchid and not args.html_only:
+            try:
+                data, balls = fetch_api_json(
+                    entityid, api_matchid, session,
+                    force=args.force, with_balls=args.balls)
+                doc = map_api_to_document(
+                    data, balls, url, api_matchid, problems)
+            except Exception as exc:
+                log.warning("JSON API failed for %s (%s); falling back to HTML",
+                            url, exc)
+
+        if doc is None:  # HTML fallback
+            try:
+                html = fetch(url, session, force=args.force)
+            except Exception as exc:  # one match failing shouldn't kill the batch
+                log.error("skip %s: %s", url, exc)
+                continue
+            try:
+                doc = parse_match(html, url, problems)
+            except Exception as exc:
+                log.exception("parse failed for %s: %s", url, exc)
+                continue
+
         reconcile(doc)
         d = doc_to_dict(doc)
         if problems:

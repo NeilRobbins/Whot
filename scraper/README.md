@@ -1,67 +1,85 @@
 # ResultsVault cricket scorecard scraper
 
 A small, robust scraper/extractor for cricket match data behind ResultsVault
-`go.aspx` gateway URLs. It normalises each match into a stable JSON schema and
-runs sanity (reconciliation) checks per innings.
+`go.aspx` gateway URLs. It prefers the **structured JSON API** (full
+batting/bowling/fielding + optional ball-by-ball) and falls back to parsing the
+rendered HTML scorecard. Each match is normalised into a stable JSON schema with
+per-innings reconciliation checks.
 
 ```
 python3 scrape_resultsvault.py                         # uses urls.txt / built-in seed
 python3 scrape_resultsvault.py URL [URL ...]           # explicit URLs
 python3 scrape_resultsvault.py --urls urls.txt         # URL list file
+python3 scrape_resultsvault.py --balls URL             # also fetch ball-by-ball
+python3 scrape_resultsvault.py --html-only URL         # skip the JSON API
 python3 scrape_resultsvault.py --force URL             # ignore the raw cache
 ```
 
-Install deps: `pip3 install -r requirements.txt` (`requests` + `selectolax`).
+Install deps: `pip3 install -r requirements.txt`
+(`requests` + `selectolax` + `pycryptodome`).
 
 ## What the response format actually is (probe results)
 
-The task asked to look for a structured feed *before* scraping HTML. I probed
-one sample URL
-(`.../go.aspx?matchid=7443828&ofl=0&id=MATCH&entityid=108595`) every way that
-plausibly toggles output format and recorded the `Content-Type` of each
-response. Every raw response is saved under `./raw/` for inspection.
+The task asked to look for a structured feed *before* scraping HTML. There is
+one — it just isn't advertised.
 
 **Finding 1 — `go.aspx` is just a redirector.** Regardless of `ofl=0/1/2/3`,
-adding `fl=1`, `type=json`, or an `Accept: application/json` header, the
-gateway always answers:
+adding `fl=1`, `type=json`, or an `Accept: application/json` header, the gateway
+always 302s to `https://play-cricket.com/live_app/scorecard?id=<pcid>`. `ofl`
+never unlocks JSON. `id=MATCH` is the view code; `matchid`/`entityid` are the
+ResultsVault fixture id and site context.
+
+**Finding 2 — the `live_app` page renders client-side.** Its scorecard HTML is
+empty for some formats (e.g. youth **pairs / net-score** cricket): the detail is
+drawn by InteractSport's *match-centre* JS bundle
+(`embed.interactsport.com/match-centre`), which doesn't read the HTML — it calls
+a JSON API.
+
+**Finding 3 — the structured feed (PRIMARY source).** The match-centre app
+fetches:
 
 ```
-HTTP/2 302
-location: https://play-cricket.com/live_app/scorecard?id=7393599
+GET https://api.resultsvault.co.uk/rv/<entityid>/matches/<matchid>/?apiid=1003&strmflg=3
+GET (same)/?apiid=1003&action=getballs&sportid=1          # ball-by-ball
+Content-Type: application/json   ->  200 application/json
 ```
 
-`id=MATCH` is the *view code* (full scorecard); `matchid` is the ResultsVault
-fixture id, which the gateway maps to an internal **Play-Cricket** scorecard
-id. `entityid` is the site/club context. `ofl` had no effect on the output
-format in any test — it does not unlock JSON.
+This returns the **complete** scorecard: `MatchTeams[].Innings[]` with
+`PlayerPerfs` (batting rows with runs/balls/4s/6s/dismissal, bowling rows with
+overs/maidens/runs/wickets/wides/no-balls, and fielding rows), innings totals
+and `extras`, plus optional `CBalls` (ball-by-ball: batter/bowler/runs/extras/
+dismissal/commentary).
 
-**Finding 2 — no token-free structured feed exists.** The Play-Cricket data
-API does expose JSON, but it is token-gated:
+The endpoint is gated by a lightweight **anti-bot request signature** (not user
+auth, no credentials, no private data) sent as a header:
 
 ```
-GET https://play-cricket.com/api/v2/match_detail.json?match_id=...
--> HTTP/2 401  application/json   {"error":"..."}    # needs an ECB API token
+X-IAS-API-REQUEST: base64( 3DES-ECB( <unix-timestamp-string>, apiSharedSecret ) )
 ```
 
-The task explicitly excludes the ECB Play-Cricket API, and it is unauthenticated-
-inaccessible anyway. The `live_app/scorecard` page itself contains **no**
-embedded JSON blob (`application/json` script, `window.__DATA__`, etc.).
+The 24-byte `apiSharedSecret` and `apiid` are public constants shipped in the
+app bundle; the server only checks the timestamp is recent (~30 min window).
+`rv_api.py` reproduces exactly what the official web app does (see
+`make_signature`). This is the same mechanism the public match-centre uses to
+read public match data; the script keeps the app's polite delays and caching.
 
-**Conclusion: the usable source is rendered HTML** at
-`https://play-cricket.com/live_app/scorecard?id=<id>`
-(`Content-Type: text/html`). The scraper follows the gateway redirect
-automatically, so you feed it the original `go.aspx` URL (or a direct
-`live_app/scorecard?id=…` URL — both work).
+> The token-gated ECB `play-cricket.com/api/v2/*.json` endpoint (HTTP 401
+> without an API token) is a *different*, excluded API and is **not** used.
 
-### Raw responses saved
+**Conclusion: the JSON API is the source of truth** and the scraper uses it
+whenever the URL carries `entityid` + `matchid` (i.e. ResultsVault gateway
+URLs). For a bare `live_app/scorecard?id=…` URL (no entityid) it falls back to
+the HTML parser below.
 
-| File (in `./raw/`)        | What it is                                            |
-|---------------------------|-------------------------------------------------------|
-| `probe_ofl0/1/2.bin`, `probe_fl1.bin`, `probe_typejson.bin`, `probe_acceptjson.bin` | gateway 302 responses for each variant (all identical redirects) |
-| `<sha16>.html`            | cached final HTML per source URL (drives idempotent re-runs) |
-| `match_<matchid>.html`    | human-readable copy of each fetched scorecard          |
+### Raw responses saved (`./raw/`)
 
-## HTML structure the parser keys off
+| File | What it is |
+|------|------------|
+| `api_<matchid>.json`       | cached JSON match document (drives idempotent re-runs) |
+| `api_<matchid>_balls.json` | cached ball-by-ball (with `--balls`) |
+| `<sha16>.html` / `match_<matchid>.html` | cached HTML (fallback path only) |
+
+## HTML structure the fallback parser keys off
 
 The parser is **label/CSS-hook keyed**, never positional on the page as a
 whole, so it survives column/section reordering:
@@ -119,19 +137,38 @@ Schema (per match):
                                 "runs", "balls", "fours", "sixes", "sr" } ],
                  "fall_of_wickets": [ { "wicket_no", "score", "batsman_out" } ],
                  "bowling": [ { "name", "overs", "maidens", "runs", "wickets",
-                                "wides", "no_balls", "econ" } ] } ],
-  "meta": { "source_url", "retrieved_at" }
+                                "wides", "no_balls", "econ" } ],
+                 "net_score_format",          // true for pairs/net-score cricket
+                 "balls": [ { "over", "ball", "innings_number",
+                              "batter", "bowler", "runs", "extras",
+                              "extras_type", "dismissed", "desc",
+                              "batter_id", "bowler_id" } ] } ],  // with --balls
+  "meta": { "source_url", "retrieved_at", "source" }
 }
 ```
 
-### Example (verified, match 7262345)
+### Example 1 — full JSON-API scorecard (verified, your seed match 7443828)
+
+A U9 **pairs / net-score** game — invisible on the HTML page, fully available
+from the JSON API, exactly matching the Play-Cricket app:
 
 ```
-Match 7262345 | FRIENDLY | 10 MAY 2026 @ 13:00
-  Hampton Hill CC  vs  Downsiders CC
-  Ground: Bushy Park   Result: WON BY 87 RUNS
-  Downsiders CC      277/3  (35.0)  extras 33
-  Hampton Hill CC    190/6  (35.0)  extras 22
+Match 7443828 | South U9 Div 2 | 2026-06-21T09:30:00+01:00
+  Hampton Wick Royal CC U9  vs  Hampton Hill CC Under 9 B
+  Result: Hampton Wick Royal CC U9 261 def. Hampton Hill CC Under 9 B 228
+  Hampton Wick Royal CC U9   261/7 (20.0) extras 41 [net score]  bxb=240
+  Hampton Hill CC Under 9 B  228/11 (20.0) extras 32 [net score]
+      A Shanmugasivam 11 (10)  4s=2  SR 110.00
+      G Metcalfe      -1 (8)   SR -12.50      # negative runs = wicket penalty
+```
+
+Per-batter, per-bowler and 240 ball-by-ball deliveries are all captured.
+
+### Example 2 — full HTML-fallback scorecard (verified, match 7262345)
+
+```
+Downsiders CC      277/3  (35.0)  extras 33   Freddie Alden 86  caught b Tahir Butt
+Hampton Hill CC    190/6  (35.0)  extras 22   Shaan Sohail 111  bowled b Cam Allen
 ```
 
 Both innings reconcile: `244 batting + 33 extras = 277`, `168 + 22 = 190`;
@@ -141,22 +178,27 @@ dismissed-batsman counts match the wicket totals.
 
 - Realistic browser `User-Agent`; 30s timeouts; up to 4 retries with
   exponential backoff (2/4/8/16s); ~1.5s polite delay between network requests.
-- **Raw responses are cached** (`./raw/<sha>.html`); re-runs are idempotent and
-  hit the cache unless `--force` is passed.
+- **Raw responses are cached** (`./raw/`); re-runs are idempotent and hit the
+  cache unless `--force` is passed.
 - **Per-innings reconciliation**: `sum(batting runs) + extras.total ==
   total_runs` and `count(dismissed) == wickets`. Mismatches are **logged**
-  (`RECON …`), never silently dropped.
+  (`RECON …`), never silently dropped. For pairs/**net-score** formats (totals
+  are net figures, batters retire rather than getting out) these identities
+  don't apply and the check is skipped with an INFO note.
 - Fields that can't be parsed are logged/left null rather than failing the whole
-  match; a network failure on one URL skips that match, not the batch.
+  match; a network/API failure on one URL skips that match, not the batch; an
+  API failure on a given match falls back to the HTML path.
 
 ## Notes / limitations
 
-- Youth/junior fixtures (e.g. the seed `matchid=7443828`, a U9 game) often have
-  **no detailed scorecard** on Play-Cricket — only points. The scraper extracts
-  the header (teams, date, ground, result, toss) and reports
-  "no innings/scorecard data on page" rather than inventing rows.
-- The live page markup can vary slightly between fetches (responsive blocks are
-  duplicated and de-duplicated in code); the label-keyed approach handles this.
-- `play-cricket.com` must be reachable. In network-restricted sandboxes the
-  redirect target may be blocked even though the gateway host resolves.
+- **Pairs/net-score (youth) matches**: `total_runs` is the *net* score (each
+  team starts from a base, ~200), batters show net runs (often negative) and
+  retire instead of being dismissed, so wicket/run reconciliation is skipped.
+  `net_score_format: true` flags these innings.
+- **Ball-by-ball name resolution**: youth feeds sometimes use match-local
+  placeholder player ids in `PlayerPerfs` that don't match the ball-feed ids, so
+  a minority of deliveries (typically extras) can't resolve a batter name. The
+  raw `batter_id`/`bowler_id` and the source `desc` string are always kept.
+- `api.resultsvault.co.uk` / `play-cricket.com` must be reachable. In
+  network-restricted sandboxes these hosts may be blocked.
 ```
