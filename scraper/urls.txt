@@ -1,0 +1,6 @@
+# ResultsVault gateway URLs (one per line; '#' comments allowed).
+# The go.aspx gateway 302-redirects to play-cricket.com/live_app/scorecard.
+https://api.resultsvault.co.uk/go.aspx?matchid=7443828&ofl=0&id=MATCH&entityid=108595
+
+# You can also point the scraper straight at a live_app scorecard, e.g.:
+# https://play-cricket.com/live_app/scorecard?id=7262345

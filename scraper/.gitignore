@@ -1,0 +1,4 @@
+# Cached raw responses and generated outputs (re-created on each run)
+raw/
+out/
+__pycache__/
