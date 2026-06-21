@@ -9,3 +9,8 @@ dist
 .tmp
 coverage
 tsconfig.tsbuildinfo
+
+# ResultsVault scraper caches / generated artifacts
+raw/
+out/
+__pycache__/
